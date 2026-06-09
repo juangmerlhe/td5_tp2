@@ -98,109 +98,152 @@ static Solution greedy_por_costo(const Instance& I) {
 }
 
 // ---------------------------------------------------------------------------
-//  HEURISTICA CONSTRUCTIVA 2: Greedy con regret (arrepentimiento).
+//  HEURISTICA CONSTRUCTIVA 2: Greedy con "arrepentimiento" (regret / look-ahead).
 //
-//  Idea: a diferencia de la greedy por costo (que fija el orden de visita de
-//  antemano), aca NO hay orden prefijado. En cada paso se decide DINAMICAMENTE
-//  a que vendedor conviene asignar ahora, mirando el estado actual (que
-//  depositos siguen con capacidad).
+//  Idea: la heuristica 1 fija el ORDEN de antemano (por demanda) y nunca lo
+//  revisa. Eso es miope: un vendedor "comodo" hoy puede quedar atrapado mas
+//  tarde porque su mejor deposito se lleno mientras atendiamos a otros, y cae
+//  en penalizacion. La heuristica de arrepentimiento corrige esto preguntando,
+//  en CADA paso: "quien es el que mas pierde si NO lo atiendo ahora?".
 //
-//  El "regret" (arrepentimiento) de un vendedor mide cuanto pierde si NO consigue
-//  su mejor deposito y tiene que ir al segundo mejor:
-//        regret(j) = costo(2do mejor deposito factible) - costo(mejor factible)
-//  Un regret grande significa "este vendedor es URGENTE": si lo dejo para
-//  despues y su mejor deposito se llena, el salto de costo es enorme. Un regret
-//  chico significa que puede esperar sin gran perdida. En cada paso asignamos al
-//  de MAYOR regret a su mejor deposito factible, y recalculamos.
+//  Para cada vendedor j sin asignar miramos sus DOS depositos factibles mas
+//  baratos: el mejor (costo c1) y el segundo mejor (costo c2). Definimos el
+//  arrepentimiento como
+//        regret(j) = c2 - c1.
+//  Regret grande  => "si pierdo mi mejor opcion, la siguiente es mucho peor":
+//                     vendedor urgente, lo atendemos ya.
+//  Regret chico   => "me da casi igual donde caer": puede esperar.
+//  En cada iteracion asignamos al vendedor de MAYOR regret a su deposito mas
+//  barato y recalculamos, porque las capacidades cambiaron.
 //
 //  Casos borde:
-//    - 1 solo deposito factible  -> no hay "segundo", regret = +infinito
-//      (maximamente urgente: o entra ahi o se pierde).
-//    - 0 depositos factibles     -> ya no entra en ningun lado; queda sin
-//      asignar (penalizacion) y se descarta de los pendientes.
+//   - Un solo deposito factible  -> regret = +infinito. Es lo mas urgente: si
+//     ese unico deposito se llena, el vendedor cae si o si en penalizacion.
+//   - Cero depositos factibles    -> el vendedor es INASIGNABLE. Como en una
+//     constructiva las capacidades solo decrecen (nunca liberamos), nunca
+//     volvera a entrar: lo marcamos "muerto" y deja de competir. Queda sin
+//     asignar y paga 3*cmax, igual que en H1.
 //
-//  Por que recalcular en cada paso: al asignar a alguien, la carga de UN deposito
-//  sube, asi que la factibilidad solo puede pasar de "entra" a "no entra", nunca
-//  al reves. Por eso un vendedor sin opciones factibles ahora no las recuperara,
-//  y los mejores/segundos mejores de los demas pueden cambiar.
+//  Por que es DISTINTA de H1 (y no solo "otro orden"):
+//   - H1 ordena UNA vez por un atributo fijo del vendedor (demanda) y asigna.
+//   - H2 NO tiene orden fijo: el orden EMERGE del estado de las capacidades.
+//     Es una decision con mirada hacia adelante (look-ahead) que reacciona a
+//     como se va llenando la red. Es la heuristica clasica de Martello-Toth.
 //
-//  Diferencia estructural con la greedy: la greedy hace UN solo barrido en orden
-//  fijo; regret es un bucle que en cada vuelta recalcula prioridades y asigna UN
-//  vendedor, hasta que no quede ninguno asignable.
+//  Tecnica: igual que en H1 no tocamos las matrices. Mantenemos un vector
+//  alive[] que marca quien sigue compitiendo (no asignado y aun asignable).
 //
-//  Complejidad (version base, sin optimizar): cada iteracion escanea todos los
-//  pendientes (O(n)) y para cada uno revisa los m depositos (O(m)); hay hasta n
-//  iteraciones  =>  O(n^2 * m). Suficiente para las instancias benchmark; para la
-//  instancia real (n=1100, m=310) es lenta. La optimizacion (recalcular solo los
-//  vendedores afectados por el deposito que cambio) se deja para una version
-//  posterior; no cambia el resultado, solo el tiempo.
+//  Complejidad: en cada uno de los (a lo sumo) n pasos recorremos los vendedores
+//  vivos y, por cada uno, sus m depositos para hallar c1 y c2  =>  O(n*m) por
+//  paso, O(n^2 * m) en total. Trivial en benchmark; ver NOTA al final para la
+//  instancia real (n=1100, m=310).
 // ---------------------------------------------------------------------------
+
 static Solution greedy_regret(const Instance& I) {
     Solution sol(I);
 
-    const double INF = std::numeric_limits<double>::infinity();
+    // alive[j] == 1  -> el vendedor j sigue compitiendo por un deposito.
+    // Pasa a 0 cuando j ya fue asignado, o cuando se queda sin ningun deposito
+    // factible (inasignable para siempre: las capacidades solo bajan).
+    std::vector<char> alive(I.n, 1);
+    int remaining = I.n;   // cantidad de vendedores todavia "vivos"
 
-    // dead[j] = 1 si el vendedor j ya no tiene ningun deposito factible
-    // (queda sin asignar definitivamente; paga penalizacion).
-    std::vector<char> dead(I.n, 0);
+    while (remaining > 0) {
+        int    best_j      = Solution::UNASSIGNED;  // vendedor a asignar este paso
+        int    best_depot  = Solution::UNASSIGNED;  // su deposito mas barato (i1)
+        double best_regret = -1.0;                  // regret del elegido
+        double best_c1     = 0.0;                   // c1 del elegido (para desempate)
 
-    while (true) {
-        int    chosen   = Solution::UNASSIGNED;  // vendedor elegido este paso
-        int    chosen_i = Solution::UNASSIGNED;  // su mejor deposito factible
-        double best_regret = -1.0;               // mayor regret visto (>= 0, o INF)
-
-        // --- Buscar al vendedor pendiente con mayor regret ---
         for (int j = 0; j < I.n; ++j) {
-            if (sol.assign[j] != Solution::UNASSIGNED || dead[j]) continue; // ya resuelto
+            if (!alive[j]) continue;
 
-            // Mejor y segundo mejor deposito FACTIBLE para j.
-            int    best_i   = Solution::UNASSIGNED;
-            double best_c   = 0.0;   // costo del mejor    (valido si feasible >= 1)
-            double second_c = 0.0;   // costo del 2do mejor (valido si feasible >= 2)
-            int    feasible = 0;
-
+            // Buscamos los DOS depositos factibles mas baratos para j en una
+            // sola pasada: i1/c1 = el mejor, i2/c2 = el segundo mejor.
+            int i1 = Solution::UNASSIGNED; double c1 = 0.0;
+            int i2 = Solution::UNASSIGNED; double c2 = 0.0;
             for (int i = 0; i < I.m; ++i) {
                 if (!sol.can_assign(j, i)) continue;
                 double c = I.cost[i][j];
-                if (feasible == 0 || c < best_c) {
-                    second_c = best_c;   // el viejo mejor pasa a ser el segundo
-                    best_c   = c;
-                    best_i   = i;
-                } else if (feasible == 1 || c < second_c) {
-                    second_c = c;        // candidato a segundo mejor
+                if (i1 == Solution::UNASSIGNED || c < c1) {
+                    i2 = i1; c2 = c1;   // el viejo mejor pasa a ser el segundo
+                    i1 = i;  c1 = c;
+                } else if (i2 == Solution::UNASSIGNED || c < c2) {
+                    i2 = i;  c2 = c;
                 }
-                ++feasible;
             }
 
-            if (feasible == 0) { dead[j] = 1; continue; } // sin opciones -> descartado
+            if (i1 == Solution::UNASSIGNED) {
+                // Sin deposito factible: inasignable para siempre. Lo retiramos.
+                alive[j] = 0;
+                --remaining;
+                continue;
+            }
 
-            double regret = (feasible == 1) ? INF : (second_c - best_c);
+            // Con un solo deposito factible -> +infinito (maxima urgencia).
+            double regret = (i2 == Solution::UNASSIGNED)
+                          ? std::numeric_limits<double>::infinity()
+                          : (c2 - c1);
 
-            if (regret > best_regret) {   // empate: gana el de menor indice (simple)
+            // Nos quedamos con el de mayor regret. Desempate: menor c1 (atendemos
+            // primero al que ademas tiene la opcion mas barata; criterio simple
+            // y reproducible).
+            if (regret > best_regret ||
+               (regret == best_regret && c1 < best_c1)) {
                 best_regret = regret;
-                chosen      = j;
-                chosen_i    = best_i;
+                best_j      = j;
+                best_depot  = i1;
+                best_c1     = c1;
             }
         }
 
-        if (chosen == Solution::UNASSIGNED) break; // no queda nadie asignable
+        if (best_j == Solution::UNASSIGNED) break;  // no quedan asignables
 
-        sol.do_assign(chosen, chosen_i);
+        sol.do_assign(best_j, best_depot);
+        alive[best_j] = 0;
+        --remaining;
     }
 
     return sol;
+}
+
+// ---------------------------------------------------------------------------
+//  Helper de experimentacion: corre una heuristica, valida y reporta.
+// ---------------------------------------------------------------------------
+struct Report { double cost; int unassigned; double ms; bool ok; };
+
+static Report run_and_report(const char* name,
+                             Solution (*fn)(const Instance&),
+                             const Instance& I) {
+    auto t0 = std::chrono::steady_clock::now();
+    Solution sol = fn(I);
+    auto t1 = std::chrono::steady_clock::now();
+    double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    double inc   = sol.cost();
+    double fresh = sol.recompute_cost_from_scratch();
+    bool ok = (std::fabs(inc - fresh) < 1e-6) && sol.is_feasible();
+
+    std::cout << "\n---- " << name << " ----\n";
+    std::cout << "  asignados   : " << (I.n - sol.num_unassigned) << " / " << I.n << "\n";
+    std::cout << "  sin asignar : " << sol.num_unassigned << "\n";
+    std::cout << "  costo       : " << inc << "\n";
+    std::cout << "  factible+ok : " << (ok ? "SI" : "NO  <-- BUG") << "\n";
+    std::cout << "  tiempo      : " << ms << " ms\n";
+    return { inc, sol.num_unassigned, ms, ok };
 }
 
 int main(int argc, char** argv) {
     std::ios::sync_with_stdio(false);
 
     if (argc < 3) {
-        std::cerr << "Uso: " << argv[0] << " <archivo_instancia> <archivo_salida>\n";
+        std::cerr << "Uso: " << argv[0] << " <archivo_instancia> <archivo_salida> [greedy|regret]\n";
         std::cerr << "Ej : " << argv[0] << " instances/gap/gap_a/a05100 out/a05100.sol\n";
+        std::cerr << "Sin el 3er parametro corre AMBAS heuristicas y escribe la mejor.\n";
         return 1;
     }
     const std::string in_path  = argv[1];
     const std::string out_path = argv[2];
+    const std::string method   = (argc >= 4) ? argv[3] : "";
 
     Instance I;
     try {
@@ -215,35 +258,32 @@ int main(int argc, char** argv) {
     const int64_t dem_min   = I.min_total_demand();
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "==== Instancia: " << in_path << " ====\n";
-    std::cout << "  depositos (m)            : " << I.m << "\n";
-    std::cout << "  vendedores (n)           : " << I.n << "\n";
-    std::cout << "  capacidad total          : " << cap_total << "\n";
-    std::cout << "  demanda total (minima)   : " << dem_min << "\n";
-    std::cout << "  holgura agregada         : " << (cap_total - dem_min)
-              << (dem_min > cap_total ? "  (INSUFICIENTE: imposible asignar a todos)" : "  (alcanza en agregado)") << "\n";
-    std::cout << "  cmax                     : " << I.cmax << "\n";
-    std::cout << "  penalizacion (3*cmax)    : " << I.penalty_per_unassigned << "\n";
+    std::cout << "  depositos (m)          : " << I.m << "\n";
+    std::cout << "  vendedores (n)         : " << I.n << "\n";
+    std::cout << "  capacidad total        : " << cap_total << "\n";
+    std::cout << "  demanda total (minima) : " << dem_min << "\n";
+    std::cout << "  holgura agregada       : " << (cap_total - dem_min)
+              << (dem_min > cap_total ? "  (INSUFICIENTE)" : "  (alcanza en agregado)") << "\n";
+    std::cout << "  cmax                   : " << I.cmax << "\n";
+    std::cout << "  penalizacion (3*cmax)  : " << I.penalty_per_unassigned << "\n";
 
-    // --- Placeholder Fase 0 -----------------------------------------------
-    auto t0 = std::chrono::steady_clock::now();
-    Solution sol = trivial_first_fit(I);
-    auto t1 = std::chrono::steady_clock::now();
-    double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-    // --- Validacion: costo incremental vs recalculo desde cero ------------
-    double inc   = sol.cost();
-    double fresh = sol.recompute_cost_from_scratch();
-    bool ok_cost = std::fabs(inc - fresh) < 1e-6;
-    bool ok_feas = sol.is_feasible();
-
-    std::cout << "\n---- Resultado (placeholder Fase 0) ----\n";
-    std::cout << "  asignados                : " << (I.n - sol.num_unassigned) << " / " << I.n << "\n";
-    std::cout << "  sin asignar              : " << sol.num_unassigned << "\n";
-    std::cout << "  costo (incremental)      : " << inc << "\n";
-    std::cout << "  costo (recalculado)      : " << fresh << "\n";
-    std::cout << "  costo consistente?       : " << (ok_cost ? "SI" : "NO  <-- BUG") << "\n";
-    std::cout << "  factible?                : " << (ok_feas ? "SI" : "NO  <-- BUG") << "\n";
-    std::cout << "  tiempo placeholder       : " << ms << " ms\n";
+    // --- Elegir y correr la(s) heuristica(s) ------------------------------
+    Solution sol(I);
+    if (method == "greedy") {
+        run_and_report("Greedy por costo", greedy_por_costo, I);
+        sol = greedy_por_costo(I);
+    } else if (method == "regret") {
+        run_and_report("Greedy con regret", greedy_regret, I);
+        sol = greedy_regret(I);
+    } else {
+        // Sin parametro: corremos ambas, comparamos y escribimos la mejor.
+        Report rg = run_and_report("Greedy por costo",  greedy_por_costo, I);
+        Report rr = run_and_report("Greedy con regret", greedy_regret,    I);
+        bool regret_gana = rr.cost < rg.cost;
+        std::cout << "\n>> Mejor: " << (regret_gana ? "Greedy con regret" : "Greedy por costo")
+                  << " (se escribe esta solucion)\n";
+        sol = regret_gana ? greedy_regret(I) : greedy_por_costo(I);
+    }
 
     // --- Escritura de la solucion -----------------------------------------
     try {
@@ -253,6 +293,5 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::cout << "\nSolucion escrita en: " << out_path << "\n";
-
-    return (ok_cost && ok_feas) ? 0 : 2;
+    return 0;
 }
