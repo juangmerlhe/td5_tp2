@@ -126,6 +126,13 @@ struct Solution {
     // -----------------------------------------------------------------------
     double cost() const { return current_cost; }
 
+    bool operator<(const Solution& other) const {
+        const double EPS = 1e-9;
+        if (current_cost < other.current_cost - EPS) return true;
+        if (current_cost > other.current_cost + EPS) return false;
+        return num_unassigned < other.num_unassigned;
+    }
+
     // -----------------------------------------------------------------------
     //  ¿Es factible? Ningun deposito excede su capacidad. O(m).
     //  (Si siempre usamos can_assign/do_assign, nunca deberia violarse, pero

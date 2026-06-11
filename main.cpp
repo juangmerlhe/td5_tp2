@@ -3,24 +3,16 @@
 // ===========================================================================
 //
 //  USO:
-//     ./gap <archivo_instancia> <archivo_salida>
+//     ./gap_simulator <archivo_instancia> <archivo_salida> [algoritmo] [iteraciones] [semilla]
 //
 //  Ejemplo:
-//     ./gap instances/gap/gap_a/a05100 out/a05100.sol
+//     ./gap_simulator instances/gap/gap_a/a05100 out/a05100.sol ils 100 123
 //
 //  ----------------------------------------------------------------------------
-//  ESTADO: FASE 0 (infraestructura).
+//  ESTADO: heuristicas constructivas, busqueda local e ILS.
 //  ----------------------------------------------------------------------------
-//  Esta version solo:
-//     1) lee la instancia,
-//     2) imprime estadisticas utiles,
-//     3) corre un asignador TRIVIAL (placeholder) para demostrar que el
-//        pipeline completo funciona y produce un archivo de salida valido,
-//     4) valida que el costo incremental coincide con el recalculo desde cero,
-//     5) escribe la solucion.
-//
-//  El placeholder de la Fase 0 se REEMPLAZA en la Fase 1 por las heuristicas
-//  constructivas de verdad (greedy por costo, greedy con regret, etc.).
+//  Algoritmos disponibles:
+//     greedy, regret, shift, swap, shift_swap, ils.
 // ===========================================================================
 
 #include "src/instance.h"
@@ -31,8 +23,12 @@
 #include <iomanip>
 #include <cmath>
 #include <chrono>
+#include <cstdlib>
+#include <limits>
 #include <numeric>   // para std::iota
 #include <algorithm> // para std::sort
+#include <random>
+#include <string>
 
 // ---------------------------------------------------------------------------
 //  HEURISTICA CONSTRUCTIVA 1: Greedy por costo con orden por demanda.
@@ -207,7 +203,7 @@ static Solution greedy_regret(const Instance& I) {
 }
 
 // ---------------------------------------------------------------------------
-//  Helper de experimentacion: corre una heuristica, valida y reporta.
+//  Helper de reporte: corre una heuristica, valida y reporta.
 // ---------------------------------------------------------------------------
 struct Report { double cost; int unassigned; double ms; bool ok; };
 
@@ -232,18 +228,234 @@ static Report run_and_report(const char* name,
     return { inc, sol.num_unassigned, ms, ok };
 }
 
+// ---------------------------------------------------------------------------
+//  OPERADOR DE BUSQUEDA LOCAL 1: SHIFT / RELOCATE.
+//
+//  Vecindario: mover un vendedor j desde su deposito actual a otro deposito i.
+//  Tambien contempla vendedores sin asignar: moverlos desde UNASSIGNED a un
+//  deposito factible cuenta como una mejora si evita pagar la penalizacion.
+//
+//  Estrategia: best improvement. En cada iteracion se revisan todos los pares
+//  (vendedor, deposito destino), se aplica el movimiento con mayor reduccion de
+//  costo y se repite hasta llegar a un optimo local para este vecindario.
+// ---------------------------------------------------------------------------
+static int local_search_shift_best_improvement(Solution& sol) {
+    const Instance& I = *sol.inst;
+    const double EPS = 1e-9;
+    int total_moves = 0;
+
+    while (true) {
+        int best_j = Solution::UNASSIGNED;
+        int best_i = Solution::UNASSIGNED;
+        double best_delta = -EPS;
+
+        for (int j = 0; j < I.n; ++j) {
+            int i_old = sol.assign[j];
+            double old_cost = (i_old == Solution::UNASSIGNED)
+                            ? I.penalty_per_unassigned
+                            : I.cost[i_old][j];
+
+            for (int i_new = 0; i_new < I.m; ++i_new) {
+                if (i_new == i_old) continue;
+                if (sol.load[i_new] + I.demand[i_new][j] > I.capacity[i_new]) continue;
+
+                double delta = I.cost[i_new][j] - old_cost;
+                if (delta < best_delta) {
+                    best_delta = delta;
+                    best_j = j;
+                    best_i = i_new;
+                }
+            }
+        }
+
+        if (best_j == Solution::UNASSIGNED) break;
+        sol.move_to(best_j, best_i);
+        ++total_moves;
+    }
+
+    return total_moves;
+}
+
+// ---------------------------------------------------------------------------
+//  OPERADOR DE BUSQUEDA LOCAL 2: SWAP.
+//
+//  Vecindario: intercambiar las asignaciones de dos vendedores a y b que estan
+//  en depositos distintos ia e ib.
+//    a pasa de ia a ib
+//    b pasa de ib a ia
+//
+//  Como la demanda depende del deposito (demand[i][j]), la factibilidad debe
+//  chequearse con las cargas resultantes:
+//    new_load_ia = load[ia] - demand[ia][a] + demand[ia][b]
+//    new_load_ib = load[ib] - demand[ib][b] + demand[ib][a]
+//
+//  Delta de costo (negativo = mejora):
+//    delta = cost[ia][b] + cost[ib][a] - cost[ia][a] - cost[ib][b]
+//
+//  Estrategia: best improvement. En cada iteracion se revisan todos los pares
+//  (a, b) con a < b, ia != ib, ambos asignados; se aplica el swap factible con
+//  mayor reduccion de costo y se repite hasta llegar a optimo local.
+// ---------------------------------------------------------------------------
+static int local_search_swap_best_improvement(Solution& sol) {
+    const Instance& I = *sol.inst;
+    const double EPS = 1e-9;
+    int total_swaps = 0;
+
+    while (true) {
+        int best_a = Solution::UNASSIGNED;
+        int best_b = Solution::UNASSIGNED;
+        double best_delta = -EPS;
+
+        for (int a = 0; a < I.n - 1; ++a) {
+            int ia = sol.assign[a];
+            if (ia == Solution::UNASSIGNED) continue;
+
+            for (int b = a + 1; b < I.n; ++b) {
+                int ib = sol.assign[b];
+                if (ib == Solution::UNASSIGNED) continue;
+                if (ia == ib) continue;
+
+                int64_t new_load_ia = sol.load[ia] - I.demand[ia][a] + I.demand[ia][b];
+                int64_t new_load_ib = sol.load[ib] - I.demand[ib][b] + I.demand[ib][a];
+                if (new_load_ia > I.capacity[ia]) continue;
+                if (new_load_ib > I.capacity[ib]) continue;
+
+                double delta = I.cost[ia][b] + I.cost[ib][a]
+                             - I.cost[ia][a] - I.cost[ib][b];
+                if (delta < best_delta) {
+                    best_delta = delta;
+                    best_a = a;
+                    best_b = b;
+                }
+            }
+        }
+
+        if (best_a == Solution::UNASSIGNED) break;
+
+        int ia = sol.assign[best_a];
+        int ib = sol.assign[best_b];
+
+        sol.load[ia] -= I.demand[ia][best_a];
+        sol.load[ia] += I.demand[ia][best_b];
+        sol.load[ib] -= I.demand[ib][best_b];
+        sol.load[ib] += I.demand[ib][best_a];
+        sol.current_cost += best_delta;
+        sol.assign[best_a] = ib;
+        sol.assign[best_b] = ia;
+
+        ++total_swaps;
+    }
+
+    return total_swaps;
+}
+
+// ---------------------------------------------------------------------------
+//  BUSQUEDA LOCAL COMBINADA: SHIFT + SWAP.
+//
+//  Aplica ambos vecindarios hasta que ninguno encuentre mejoras. SHIFT suele
+//  acomodar vendedores individualmente; SWAP puede destrabar mejoras que no son
+//  posibles moviendo un unico vendedor sin violar capacidades.
+// ---------------------------------------------------------------------------
+static int local_search_shift_swap(Solution& sol) {
+    int total_moves = 0;
+
+    while (true) {
+        int moves = 0;
+        moves += local_search_shift_best_improvement(sol);
+        moves += local_search_swap_best_improvement(sol);
+
+        if (moves == 0) break;
+        total_moves += moves;
+    }
+
+    return total_moves;
+}
+
+static Solution best_constructive(const Instance& I) {
+    Solution a = greedy_por_costo(I);
+    Solution b = greedy_regret(I);
+    return (b < a) ? b : a;
+}
+
+static void perturb_solution(Solution& sol, std::mt19937& rng, int strength) {
+    const Instance& I = *sol.inst;
+    if (I.n == 0 || I.m == 0) return;
+
+    std::uniform_int_distribution<int> seller_dist(0, I.n - 1);
+    std::uniform_int_distribution<int> depot_dist(0, I.m - 1);
+    std::uniform_int_distribution<int> action_dist(0, 3);
+
+    for (int step = 0; step < strength; ++step) {
+        int j = seller_dist(rng);
+
+        if (sol.assign[j] != Solution::UNASSIGNED && action_dist(rng) == 0) {
+            sol.do_unassign(j);
+            continue;
+        }
+
+        for (int attempt = 0; attempt < I.m; ++attempt) {
+            int i_new = depot_dist(rng);
+            if (i_new != sol.assign[j] && sol.move_to(j, i_new)) break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  METAHEURISTICA: Iterated Local Search (ILS).
+//
+//  1) Construye una solucion inicial.
+//  2) La lleva a optimo local con SHIFT + SWAP.
+//  3) Perturba la solucion actual.
+//  4) Vuelve a aplicar SHIFT + SWAP.
+//  5) Conserva la mejor solucion encontrada y acepta algunas peores para poder
+//     salir de optimos locales.
+// ---------------------------------------------------------------------------
+static Solution iterated_local_search(const Instance& I,
+                                      int iterations,
+                                      int perturb_strength,
+                                      unsigned seed) {
+    Solution current = best_constructive(I);
+    local_search_shift_swap(current);
+
+    Solution best = current;
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<double> prob_dist(0.0, 1.0);
+
+    for (int it = 0; it < iterations; ++it) {
+        Solution candidate = current;
+        perturb_solution(candidate, rng, perturb_strength);
+        local_search_shift_swap(candidate);
+
+        if (candidate < best) best = candidate;
+
+        if (candidate < current) {
+            current = candidate;
+        } else {
+            double progress = static_cast<double>(it + 1) / std::max(1, iterations);
+            double temperature = std::max(1.0, I.penalty_per_unassigned * (1.0 - progress));
+            double delta = candidate.cost() - current.cost();
+            double accept_prob = std::exp(-delta / temperature);
+            if (prob_dist(rng) < accept_prob) current = candidate;
+        }
+    }
+
+    return best;
+}
+
 int main(int argc, char** argv) {
     std::ios::sync_with_stdio(false);
 
     if (argc < 3) {
-        std::cerr << "Uso: " << argv[0] << " <archivo_instancia> <archivo_salida> [greedy|regret]\n";
-        std::cerr << "Ej : " << argv[0] << " instances/gap/gap_a/a05100 out/a05100.sol\n";
-        std::cerr << "Sin el 3er parametro corre AMBAS heuristicas y escribe la mejor.\n";
+        std::cerr << "Uso: " << argv[0] << " <archivo_instancia> <archivo_salida> [algoritmo] [iteraciones] [semilla]\n";
+        std::cerr << "Algoritmos: greedy, regret, shift, swap, shift_swap, ils (default)\n";
+        std::cerr << "Ej : " << argv[0] << " instances/gap/gap_a/a05100 out/a05100.sol ils 100 123\n";
         return 1;
     }
     const std::string in_path  = argv[1];
     const std::string out_path = argv[2];
     const std::string method   = (argc >= 4) ? argv[3] : "";
+    const int iterations       = (argc >= 5) ? std::max(0, std::atoi(argv[4])) : 100;
+    const unsigned seed        = (argc >= 6) ? static_cast<unsigned>(std::strtoul(argv[5], nullptr, 10)) : 1234567u;
 
     Instance I;
     try {
@@ -267,23 +479,54 @@ int main(int argc, char** argv) {
     std::cout << "  cmax                   : " << I.cmax << "\n";
     std::cout << "  penalizacion (3*cmax)  : " << I.penalty_per_unassigned << "\n";
 
-    // --- Elegir y correr la(s) heuristica(s) ------------------------------
+    // --- Elegir y correr algoritmo ----------------------------------------
+    auto t0 = std::chrono::steady_clock::now();
     Solution sol(I);
+    std::string algorithm_label;
+
     if (method == "greedy") {
-        run_and_report("Greedy por costo", greedy_por_costo, I);
         sol = greedy_por_costo(I);
+        algorithm_label = "Greedy por costo";
     } else if (method == "regret") {
-        run_and_report("Greedy con regret", greedy_regret, I);
         sol = greedy_regret(I);
+        algorithm_label = "Greedy con regret";
+    } else if (method == "shift") {
+        sol = best_constructive(I);
+        local_search_shift_best_improvement(sol);
+        algorithm_label = "Mejor constructiva + busqueda local SHIFT";
+    } else if (method == "swap") {
+        sol = best_constructive(I);
+        local_search_swap_best_improvement(sol);
+        algorithm_label = "Mejor constructiva + busqueda local SWAP";
+    } else if (method == "shift_swap") {
+        sol = best_constructive(I);
+        local_search_shift_swap(sol);
+        algorithm_label = "Mejor constructiva + busqueda local SHIFT+SWAP";
+    } else if (method == "ils" || method == "") {
+        int perturb_strength = std::max(1, I.n / 50);
+        sol = iterated_local_search(I, iterations, perturb_strength, seed);
+        algorithm_label = "Iterated Local Search";
     } else {
-        // Sin parametro: corremos ambas, comparamos y escribimos la mejor.
-        Report rg = run_and_report("Greedy por costo",  greedy_por_costo, I);
-        Report rr = run_and_report("Greedy con regret", greedy_regret,    I);
-        bool regret_gana = rr.cost < rg.cost;
-        std::cout << "\n>> Mejor: " << (regret_gana ? "Greedy con regret" : "Greedy por costo")
-                  << " (se escribe esta solucion)\n";
-        sol = regret_gana ? greedy_regret(I) : greedy_por_costo(I);
+        std::cerr << "ERROR: algoritmo desconocido '" << method << "'.\n";
+        std::cerr << "Opciones: greedy, regret, shift, swap, shift_swap, ils\n";
+        return 1;
     }
+    auto t1 = std::chrono::steady_clock::now();
+    double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    double inc = sol.cost();
+    double fresh = sol.recompute_cost_from_scratch();
+    bool ok_cost = std::fabs(inc - fresh) < 1e-6;
+    bool ok_feas = sol.is_feasible();
+
+    std::cout << "\n---- Resultado: " << algorithm_label << " ----\n";
+    std::cout << "  asignados          : " << (I.n - sol.num_unassigned) << " / " << I.n << "\n";
+    std::cout << "  sin asignar        : " << sol.num_unassigned << "\n";
+    std::cout << "  costo incremental  : " << inc << "\n";
+    std::cout << "  costo recalculado  : " << fresh << "\n";
+    std::cout << "  costo consistente  : " << (ok_cost ? "SI" : "NO  <-- BUG") << "\n";
+    std::cout << "  factible           : " << (ok_feas ? "SI" : "NO  <-- BUG") << "\n";
+    std::cout << "  tiempo algoritmo   : " << ms << " ms\n";
 
     // --- Escritura de la solucion -----------------------------------------
     try {
@@ -293,5 +536,5 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::cout << "\nSolucion escrita en: " << out_path << "\n";
-    return 0;
+    return (ok_cost && ok_feas) ? 0 : 2;
 }

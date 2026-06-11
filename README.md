@@ -1,95 +1,113 @@
-# TP2 - Logística centralizada de primera milla (GAP / ThunderPack)
+# TP2 - Logistica centralizada de primera milla
 
 Resolvedor del **Generalized Assignment Problem (GAP)** para el caso ThunderPack.
 
 ## Estructura del proyecto
 
+```text
+td5_tp2/
+|-- main.cpp            # punto de entrada y algoritmos principales
+|-- Makefile            # compila el ejecutable gap_simulator
+|-- README.md
+|-- src/
+|   |-- instance.h      # lectura de instancias y datos del problema
+|   |-- solution.h      # solucion, costo, factibilidad y movimientos basicos
+|   `-- io.h            # escritura de la solucion en el formato pedido
+|-- instances/
+|   |-- gap/            # instancias benchmark tipo OR-Library
+|   `-- real/           # instancia real del TP
+`-- out/                # salidas generadas localmente
 ```
-gap/
-├── main.cpp            # punto de entrada (CLI) -- "aca empieza la magia"
-├── Makefile            # provisto por la catedra
-├── README.md
-├── src/
-│   ├── instance.h      # lectura del archivo de instancia + estructuras de datos
-│   ├── solution.h      # representacion de solucion, costo y factibilidad (incremental)
-│   └── io.h            # escritura de la solucion en el formato pedido
-├── instances/          # instancias (benchmark y real)
-│   ├── gap/{gap_a,gap_b,gap_e}/...
-│   └── real/real_instance
-└── out/                # archivos de salida generados
-```
 
-> **Diseño header-only.** Toda la logica vive en los headers de `src/`, que
-> `main.cpp` incluye. Por eso el Makefile (que compila un unico archivo fuente,
-> `main.cpp`) funciona sin modificaciones: no hay que agregar `.cpp` a `SRC`.
-
-## Compilación
-
-Requiere `g++` con soporte C++17. Usando el Makefile provisto:
+## Compilacion
 
 ```bash
-make          # compila el ejecutable ./gap_simulator
-make clean    # borra objetos y ejecutable
+make
 ```
 
-## Ejecución
+Eso genera el ejecutable `gap_simulator`.
+
+Para limpiar objetos y ejecutable:
 
 ```bash
-./gap_simulator <archivo_instancia> <archivo_salida>
+make clean
+```
+
+## Ejecucion
+
+```bash
+./gap_simulator <archivo_instancia> <archivo_salida> [algoritmo] [iteraciones] [semilla]
+```
+
+En Windows PowerShell:
+
+```powershell
+.\gap_simulator.exe <archivo_instancia> <archivo_salida> [algoritmo] [iteraciones] [semilla]
 ```
 
 Ejemplos:
 
 ```bash
-./gap_simulator instances/gap/gap_a/a05100 out/a05100.sol
-./gap_simulator instances/real/real_instance out/real.sol
+./gap_simulator instances/gap/gap_a/a05100 out/a05100.sol ils 100 123
+./gap_simulator instances/gap/gap_a/a05100 out/a05100_shift_swap.sol shift_swap
+./gap_simulator instances/real/real_instance out/real.sol ils 300 123
 ```
 
-El programa imprime estadísticas de la instancia y, en esta etapa (Fase 0),
-corre un asignador trivial de prueba que será reemplazado por las heurísticas
-constructivas reales en la Fase 1.
+Si no se indica algoritmo, se usa `ils` con 100 iteraciones y semilla fija.
 
-## Recomendación para la competencia (optimización)
+## Algoritmos disponibles
 
-El Makefile provisto compila **sin optimización** (`CFLAGS = -std=c++17`). Para
-la instancia real y la metaheurística (que corre durante minutos), activar `-O2`
-da una aceleración de ~5-10x. Es solo un *flag* del compilador (no una librería
-externa), así que es válido. Cambiar una línea:
+- `greedy`: heuristica constructiva golosa por costo, procesando primero vendedores de mayor demanda.
+- `regret`: heuristica constructiva por arrepentimiento, priorizando vendedores que perderian mucho si no se asignan ahora.
+- `shift`: parte de la mejor constructiva y aplica busqueda local por movimiento individual de vendedor.
+- `swap`: parte de la mejor constructiva y aplica busqueda local por intercambio de dos vendedores asignados.
+- `shift_swap`: combina los dos operadores de busqueda local hasta que ninguno mejore.
+- `ils`: metaheuristica Iterated Local Search con perturbacion y busqueda local `shift_swap`.
 
-```make
-CFLAGS = -std=c++17 -O2
+## Formato de instancia
+
+```text
+m n
+matriz de costos c_ij      (m filas, n columnas)
+matriz de demandas d_ij    (m filas, n columnas)
+capacidades de depositos   (m valores)
 ```
 
-Para depurar durante el desarrollo (detecta accesos invalidos y comportamiento
-indefinido), compilar a mano sin tocar el Makefile:
-
-```bash
-g++ -std=c++17 -O0 -g -fsanitize=address,undefined main.cpp -o gap_simulator
-```
-
-## Formato de la instancia
-
-```
-Linea 1 : m n                  (m = depositos, n = vendedores)
-Luego   : m*n valores  costos   c_ij  (fila i = costos del deposito i)
-Luego   : m*n valores  demandas d_ij  (fila i = demandas del deposito i)
-Luego   : m valores    capacidades c_i
-```
-
-En el benchmark todos los valores son enteros; en la instancia real los costos
-son decimales (distancias). El lector maneja ambos casos (lee costos como `double`).
+Los costos pueden ser enteros o decimales. Las demandas y capacidades se leen como enteros.
 
 ## Formato de salida
 
-Una línea por depósito (la línea *i* corresponde al depósito *i*), con los
-índices de los vendedores asignados separados por espacios.
+El archivo de salida tiene una linea por deposito. En la linea `i` aparecen los vendedores asignados a ese deposito, separados por espacios.
 
-> **Base de índices:** definida por la constante `OUTPUT_INDEX_BASE` en
-> `src/io.h` (por defecto 0). El enunciado modela N = {1,...,n}; **confirmar con
-> la cátedra** si esperan salida base-0 o base-1 y ajustar esa constante.
+La base de indices se define en `src/io.h` mediante `OUTPUT_INDEX_BASE`.
 
-## Función objetivo
+## Funcion objetivo
 
-Suma de los costos (distancias) de las asignaciones, más una penalización de
-`3 * cmax` por cada vendedor sin asignar, donde `cmax` es la máxima distancia
-de la instancia.
+El costo de una solucion es:
+
+```text
+suma de costos de asignacion + penalizacion por vendedores sin asignar
+```
+
+La penalizacion usada por el codigo es `3 * cmax`, donde `cmax` es el mayor costo de la instancia.
+
+## Estado actual
+
+Implementado:
+
+- lectura de instancias;
+- escritura de soluciones;
+- clase de instancia;
+- clase de solucion;
+- comparacion de soluciones con `operator<`;
+- funcion de costo incremental y validacion por recomputo;
+- chequeo de factibilidad por capacidades;
+- dos heuristicas constructivas;
+- dos operadores de busqueda local;
+- metaheuristica ILS.
+
+Pendiente:
+
+- sistematizar experimentacion y tuning;
+- analizar resultados de benchmark y caso real;
+- redactar el informe.
