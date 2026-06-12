@@ -407,13 +407,33 @@ static void perturb_solution(Solution& sol, std::mt19937& rng, int strength) {
 //  2) La lleva a optimo local con SHIFT + SWAP.
 //  3) Perturba la solucion actual.
 //  4) Vuelve a aplicar SHIFT + SWAP.
-//  5) Conserva la mejor solucion encontrada y acepta algunas peores para poder
-//     salir de optimos locales.
+//  5) Conserva la mejor solucion encontrada y, segun el criterio de
+//     aceptacion elegido, acepta o no soluciones peores como incumbent.
+//
+//  CRITERIOS DE ACEPTACION (parametro 'accept'):
+//
+//   - BETTER: el ILS "de libro" visto en clase. El incumbent solo se
+//     reemplaza si el candidato es estrictamente mejor. La diversificacion
+//     proviene unicamente de la perturbacion.
+//
+//   - SA: variante inspirada en Simulated Annealing ("aceptar soluciones
+//     que empeoran", diapositiva de metaheuristicas). Un candidato peor se
+//     acepta con probabilidad exp(-delta/T), con una temperatura T que
+//     decrece linealmente a lo largo de la corrida: al principio se acepta
+//     casi cualquier cosa (diversificacion), al final casi nada
+//     (intensificacion).
+//
+//  Tener AMBOS criterios como parametro nos permite, en la experimentacion
+//  (inciso 4), medir si la aceptacion probabilistica realmente aporta
+//  respecto del esquema clasico, en lugar de fijarla a priori.
 // ---------------------------------------------------------------------------
+enum class AcceptCriterion { BETTER, SA };
+
 static Solution iterated_local_search(const Instance& I,
                                       int iterations,
                                       int perturb_strength,
-                                      unsigned seed) {
+                                      unsigned seed,
+                                      AcceptCriterion accept) {
     Solution current = best_constructive(I);
     local_search_shift_swap(current);
 
@@ -430,13 +450,15 @@ static Solution iterated_local_search(const Instance& I,
 
         if (candidate < current) {
             current = candidate;
-        } else {
+        } else if (accept == AcceptCriterion::SA) {
             double progress = static_cast<double>(it + 1) / std::max(1, iterations);
             double temperature = std::max(1.0, I.penalty_per_unassigned * (1.0 - progress));
             double delta = candidate.cost() - current.cost();
             double accept_prob = std::exp(-delta / temperature);
             if (prob_dist(rng) < accept_prob) current = candidate;
         }
+        // Con BETTER, un candidato peor simplemente se descarta: la proxima
+        // perturbacion parte otra vez del incumbent actual.
     }
 
     return best;
@@ -446,9 +468,13 @@ int main(int argc, char** argv) {
     std::ios::sync_with_stdio(false);
 
     if (argc < 3) {
-        std::cerr << "Uso: " << argv[0] << " <archivo_instancia> <archivo_salida> [algoritmo] [iteraciones] [semilla]\n";
+        std::cerr << "Uso: " << argv[0] << " <archivo_instancia> <archivo_salida> [algoritmo] [iteraciones] [semilla] [strength] [accept] [--csv]\n";
         std::cerr << "Algoritmos: greedy, regret, shift, swap, shift_swap, ils (default)\n";
-        std::cerr << "Ej : " << argv[0] << " instances/gap/gap_a/a05100 out/a05100.sol ils 100 123\n";
+        std::cerr << "  strength : intensidad de la perturbacion del ILS (default n/50)\n";
+        std::cerr << "  accept   : criterio de aceptacion del ILS: better | sa (default sa)\n";
+        std::cerr << "  --csv    : imprime UNA linea CSV por stdout en lugar del reporte\n";
+        std::cerr << "             (para sistematizar la experimentacion del inciso 4)\n";
+        std::cerr << "Ej : " << argv[0] << " instances/gap/gap_a/a05100 out/a05100.sol ils 100 123 22 better --csv\n";
         return 1;
     }
     const std::string in_path  = argv[1];
@@ -456,6 +482,23 @@ int main(int argc, char** argv) {
     const std::string method   = (argc >= 4) ? argv[3] : "";
     const int iterations       = (argc >= 5) ? std::max(0, std::atoi(argv[4])) : 100;
     const unsigned seed        = (argc >= 6) ? static_cast<unsigned>(std::strtoul(argv[5], nullptr, 10)) : 1234567u;
+
+    // strength <= 0 (o ausente) significa "usar el default n/50, calculado
+    // luego de leer la instancia" (todavia no conocemos n en este punto).
+    const int strength_arg     = (argc >= 7) ? std::atoi(argv[6]) : 0;
+    const std::string accept_s = (argc >= 8) ? argv[7] : "sa";
+
+    // Modo CSV: se acepta como ultimo argumento, en cualquier posicion >= 4.
+    bool csv_mode = false;
+    for (int a = 3; a < argc; ++a)
+        if (std::string(argv[a]) == "--csv") csv_mode = true;
+
+    AcceptCriterion accept = AcceptCriterion::SA;
+    if (accept_s == "better")  accept = AcceptCriterion::BETTER;
+    else if (accept_s != "sa" && accept_s != "--csv") {
+        std::cerr << "ERROR: criterio de aceptacion desconocido '" << accept_s << "' (better | sa)\n";
+        return 1;
+    }
 
     Instance I;
     try {
@@ -465,10 +508,16 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Default de la perturbacion: n/50 vendedores por iteracion (~2% de la
+    // instancia). Es el valor historico del proyecto; ahora es tuneable.
+    const int perturb_strength = (strength_arg > 0) ? strength_arg
+                                                    : std::max(1, I.n / 50);
+
     // --- Estadisticas de la instancia -------------------------------------
     const int64_t cap_total = I.total_capacity();
     const int64_t dem_min   = I.min_total_demand();
     std::cout << std::fixed << std::setprecision(2);
+    if (!csv_mode) {
     std::cout << "==== Instancia: " << in_path << " ====\n";
     std::cout << "  depositos (m)          : " << I.m << "\n";
     std::cout << "  vendedores (n)         : " << I.n << "\n";
@@ -478,6 +527,7 @@ int main(int argc, char** argv) {
               << (dem_min > cap_total ? "  (INSUFICIENTE)" : "  (alcanza en agregado)") << "\n";
     std::cout << "  cmax                   : " << I.cmax << "\n";
     std::cout << "  penalizacion (3*cmax)  : " << I.penalty_per_unassigned << "\n";
+    } // fin if (!csv_mode)
 
     // --- Elegir y correr algoritmo ----------------------------------------
     auto t0 = std::chrono::steady_clock::now();
@@ -503,8 +553,7 @@ int main(int argc, char** argv) {
         local_search_shift_swap(sol);
         algorithm_label = "Mejor constructiva + busqueda local SHIFT+SWAP";
     } else if (method == "ils" || method == "") {
-        int perturb_strength = std::max(1, I.n / 50);
-        sol = iterated_local_search(I, iterations, perturb_strength, seed);
+        sol = iterated_local_search(I, iterations, perturb_strength, seed, accept);
         algorithm_label = "Iterated Local Search";
     } else {
         std::cerr << "ERROR: algoritmo desconocido '" << method << "'.\n";
@@ -518,6 +567,36 @@ int main(int argc, char** argv) {
     double fresh = sol.recompute_cost_from_scratch();
     bool ok_cost = std::fabs(inc - fresh) < 1e-6;
     bool ok_feas = sol.is_feasible();
+
+    // ------------------------------------------------------------------
+    //  MODO CSV (inciso 4: experimentacion y discusion).
+    //
+    //  IDEA GENERAL:
+    //
+    //  Estamos comparando distintos metodos y distintas configuraciones
+    //  de ILS para entender como impactan sobre la calidad de la solucion
+    //  obtenida y sobre el tiempo de ejecucion.
+    //
+    //  El objetivo no es solamente obtener una buena solucion, sino
+    //  tambien estudiar el comportamiento del algoritmo. Para eso cada
+    //  corrida emite UNA fila CSV con todos los factores experimentales
+    //  (instancia, metodo, iteraciones, strength, accept, semilla) y las
+    //  metricas de respuesta (costo, sin_asignar, tiempo). El script
+    //  scripts/run_experiments.sh recorre la grilla y concatena las filas;
+    //  el analisis posterior (tablas, graficos) se hace sobre ese CSV.
+    //
+    //  Si la auto-validacion fallo (ok=0) la fila debe DESCARTARSE: indica
+    //  un bug, no un resultado.
+    // ------------------------------------------------------------------
+    if (csv_mode) {
+        std::cout << in_path << ',' << algorithm_label << ',' << method
+                  << ',' << iterations << ',' << perturb_strength
+                  << ',' << accept_s << ',' << seed
+                  << ',' << inc << ',' << sol.num_unassigned
+                  << ',' << ms << ',' << ((ok_cost && ok_feas) ? 1 : 0) << '\n';
+        try { write_solution(out_path, sol); } catch (...) {}
+        return (ok_cost && ok_feas) ? 0 : 2;
+    }
 
     std::cout << "\n---- Resultado: " << algorithm_label << " ----\n";
     std::cout << "  asignados          : " << (I.n - sol.num_unassigned) << " / " << I.n << "\n";

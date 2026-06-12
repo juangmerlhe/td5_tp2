@@ -36,8 +36,31 @@ make clean
 ## Ejecucion
 
 ```bash
-./gap_simulator <archivo_instancia> <archivo_salida> [algoritmo] [iteraciones] [semilla]
+./gap_simulator <archivo_instancia> <archivo_salida> [algoritmo] [iteraciones] [semilla] [strength] [accept] [--csv]
 ```
+
+Parametros opcionales:
+
+- `iteraciones`: iteraciones del ILS (default 100).
+- `semilla`: semilla del generador aleatorio del ILS (default 1234567).
+- `strength`: cantidad de movimientos aleatorios por perturbacion del ILS.
+  Con `0` (o ausente) se usa el default `n/50`.
+- `accept`: criterio de aceptacion del incumbent en el ILS: `better`
+  (solo acepta mejoras, ILS clasico) o `sa` (acepta peoras con
+  probabilidad `exp(-delta/T)`, temperatura decreciente; default).
+- `--csv`: en lugar del reporte legible, imprime una unica linea CSV
+  `instancia,algoritmo,metodo,iteraciones,strength,accept,semilla,costo,sin_asignar,ms,ok`
+  para sistematizar la experimentacion.
+
+## Experimentacion (inciso 4)
+
+```bash
+make
+bash scripts/run_experiments.sh        # fase 1 (metodos) + fase 2 (tuning ILS)
+FASE=1 bash scripts/run_experiments.sh # solo comparacion de metodos
+```
+
+Los resultados quedan en `results/experiments.csv`, una fila por corrida.
 
 En Windows PowerShell:
 
@@ -106,8 +129,12 @@ Implementado:
 - dos operadores de busqueda local;
 - metaheuristica ILS.
 
+- parametros de tuning del ILS expuestos por CLI (`strength`, `accept`);
+- modo `--csv` y script `scripts/run_experiments.sh` para la
+  experimentacion del inciso 4.
+
 Pendiente:
 
-- sistematizar experimentacion y tuning;
-- analizar resultados de benchmark y caso real;
+- correr la grilla completa y armar tablas/graficos;
+- analizar resultados de benchmark y caso real (inciso 5);
 - redactar el informe.
