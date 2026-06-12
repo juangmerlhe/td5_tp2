@@ -36,6 +36,7 @@ make clean
 ## Ejecucion
 
 ```bash
+<<<<<<< HEAD
 ./gap_simulator <archivo_instancia> <archivo_salida> [algoritmo] [iteraciones] [semilla] [strength] [accept] [--csv]
 ```
 
@@ -62,6 +63,11 @@ FASE=1 bash scripts/run_experiments.sh # solo comparacion de metodos
 
 Los resultados quedan en `results/experiments.csv`, una fila por corrida.
 
+=======
+./gap_simulator <archivo_instancia> <archivo_salida> [algoritmo] [iteraciones] [semilla]
+```
+
+>>>>>>> bc77822 (Entrega TP2)
 En Windows PowerShell:
 
 ```powershell
@@ -129,6 +135,7 @@ Implementado:
 - dos operadores de busqueda local;
 - metaheuristica ILS.
 
+<<<<<<< HEAD
 - parametros de tuning del ILS expuestos por CLI (`strength`, `accept`);
 - modo `--csv` y script `scripts/run_experiments.sh` para la
   experimentacion del inciso 4.
@@ -137,4 +144,10 @@ Pendiente:
 
 - correr la grilla completa y armar tablas/graficos;
 - analizar resultados de benchmark y caso real (inciso 5);
+=======
+Pendiente:
+
+- sistematizar experimentacion y tuning;
+- analizar resultados de benchmark y caso real;
+>>>>>>> bc77822 (Entrega TP2)
 - redactar el informe.

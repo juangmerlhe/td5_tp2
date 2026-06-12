@@ -407,6 +407,7 @@ static void perturb_solution(Solution& sol, std::mt19937& rng, int strength) {
 //  2) La lleva a optimo local con SHIFT + SWAP.
 //  3) Perturba la solucion actual.
 //  4) Vuelve a aplicar SHIFT + SWAP.
+<<<<<<< HEAD
 //  5) Conserva la mejor solucion encontrada y, segun el criterio de
 //     aceptacion elegido, acepta o no soluciones peores como incumbent.
 //
@@ -434,6 +435,15 @@ static Solution iterated_local_search(const Instance& I,
                                       int perturb_strength,
                                       unsigned seed,
                                       AcceptCriterion accept) {
+=======
+//  5) Conserva la mejor solucion encontrada y acepta algunas peores para poder
+//     salir de optimos locales.
+// ---------------------------------------------------------------------------
+static Solution iterated_local_search(const Instance& I,
+                                      int iterations,
+                                      int perturb_strength,
+                                      unsigned seed) {
+>>>>>>> bc77822 (Entrega TP2)
     Solution current = best_constructive(I);
     local_search_shift_swap(current);
 
@@ -450,15 +460,22 @@ static Solution iterated_local_search(const Instance& I,
 
         if (candidate < current) {
             current = candidate;
+<<<<<<< HEAD
         } else if (accept == AcceptCriterion::SA) {
+=======
+        } else {
+>>>>>>> bc77822 (Entrega TP2)
             double progress = static_cast<double>(it + 1) / std::max(1, iterations);
             double temperature = std::max(1.0, I.penalty_per_unassigned * (1.0 - progress));
             double delta = candidate.cost() - current.cost();
             double accept_prob = std::exp(-delta / temperature);
             if (prob_dist(rng) < accept_prob) current = candidate;
         }
+<<<<<<< HEAD
         // Con BETTER, un candidato peor simplemente se descarta: la proxima
         // perturbacion parte otra vez del incumbent actual.
+=======
+>>>>>>> bc77822 (Entrega TP2)
     }
 
     return best;
@@ -468,6 +485,7 @@ int main(int argc, char** argv) {
     std::ios::sync_with_stdio(false);
 
     if (argc < 3) {
+<<<<<<< HEAD
         std::cerr << "Uso: " << argv[0] << " <archivo_instancia> <archivo_salida> [algoritmo] [iteraciones] [semilla] [strength] [accept] [--csv]\n";
         std::cerr << "Algoritmos: greedy, regret, shift, swap, shift_swap, ils (default)\n";
         std::cerr << "  strength : intensidad de la perturbacion del ILS (default n/50)\n";
@@ -475,6 +493,12 @@ int main(int argc, char** argv) {
         std::cerr << "  --csv    : imprime UNA linea CSV por stdout en lugar del reporte\n";
         std::cerr << "             (para sistematizar la experimentacion del inciso 4)\n";
         std::cerr << "Ej : " << argv[0] << " instances/gap/gap_a/a05100 out/a05100.sol ils 100 123 22 better --csv\n";
+=======
+        std::cerr << "Uso: " << argv[0] << " <archivo_instancia> <archivo_salida> [algoritmo] [iteraciones] [semilla] [perturb_strength]\n";
+        std::cerr << "Algoritmos: greedy, regret, shift, swap, shift_swap, ils (default)\n";
+        std::cerr << "perturb_strength: solo para ils, 0 = default (n/50)\n";
+        std::cerr << "Ej : " << argv[0] << " instances/gap/gap_a/a05100 out/a05100.sol ils 100 123\n";
+>>>>>>> bc77822 (Entrega TP2)
         return 1;
     }
     const std::string in_path  = argv[1];
@@ -482,6 +506,7 @@ int main(int argc, char** argv) {
     const std::string method   = (argc >= 4) ? argv[3] : "";
     const int iterations       = (argc >= 5) ? std::max(0, std::atoi(argv[4])) : 100;
     const unsigned seed        = (argc >= 6) ? static_cast<unsigned>(std::strtoul(argv[5], nullptr, 10)) : 1234567u;
+<<<<<<< HEAD
 
     // strength <= 0 (o ausente) significa "usar el default n/50, calculado
     // luego de leer la instancia" (todavia no conocemos n en este punto).
@@ -499,6 +524,9 @@ int main(int argc, char** argv) {
         std::cerr << "ERROR: criterio de aceptacion desconocido '" << accept_s << "' (better | sa)\n";
         return 1;
     }
+=======
+    const int perturb_arg      = (argc >= 7) ? std::atoi(argv[6]) : 0; // 0 => usar default (n/50)
+>>>>>>> bc77822 (Entrega TP2)
 
     Instance I;
     try {
@@ -508,16 +536,22 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+<<<<<<< HEAD
     // Default de la perturbacion: n/50 vendedores por iteracion (~2% de la
     // instancia). Es el valor historico del proyecto; ahora es tuneable.
     const int perturb_strength = (strength_arg > 0) ? strength_arg
                                                     : std::max(1, I.n / 50);
 
+=======
+>>>>>>> bc77822 (Entrega TP2)
     // --- Estadisticas de la instancia -------------------------------------
     const int64_t cap_total = I.total_capacity();
     const int64_t dem_min   = I.min_total_demand();
     std::cout << std::fixed << std::setprecision(2);
+<<<<<<< HEAD
     if (!csv_mode) {
+=======
+>>>>>>> bc77822 (Entrega TP2)
     std::cout << "==== Instancia: " << in_path << " ====\n";
     std::cout << "  depositos (m)          : " << I.m << "\n";
     std::cout << "  vendedores (n)         : " << I.n << "\n";
@@ -527,7 +561,10 @@ int main(int argc, char** argv) {
               << (dem_min > cap_total ? "  (INSUFICIENTE)" : "  (alcanza en agregado)") << "\n";
     std::cout << "  cmax                   : " << I.cmax << "\n";
     std::cout << "  penalizacion (3*cmax)  : " << I.penalty_per_unassigned << "\n";
+<<<<<<< HEAD
     } // fin if (!csv_mode)
+=======
+>>>>>>> bc77822 (Entrega TP2)
 
     // --- Elegir y correr algoritmo ----------------------------------------
     auto t0 = std::chrono::steady_clock::now();
@@ -553,7 +590,12 @@ int main(int argc, char** argv) {
         local_search_shift_swap(sol);
         algorithm_label = "Mejor constructiva + busqueda local SHIFT+SWAP";
     } else if (method == "ils" || method == "") {
+<<<<<<< HEAD
         sol = iterated_local_search(I, iterations, perturb_strength, seed, accept);
+=======
+        int perturb_strength = (perturb_arg > 0) ? perturb_arg : std::max(1, I.n / 50);
+        sol = iterated_local_search(I, iterations, perturb_strength, seed);
+>>>>>>> bc77822 (Entrega TP2)
         algorithm_label = "Iterated Local Search";
     } else {
         std::cerr << "ERROR: algoritmo desconocido '" << method << "'.\n";
@@ -568,6 +610,7 @@ int main(int argc, char** argv) {
     bool ok_cost = std::fabs(inc - fresh) < 1e-6;
     bool ok_feas = sol.is_feasible();
 
+<<<<<<< HEAD
     // ------------------------------------------------------------------
     //  MODO CSV (inciso 4: experimentacion y discusion).
     //
@@ -598,6 +641,8 @@ int main(int argc, char** argv) {
         return (ok_cost && ok_feas) ? 0 : 2;
     }
 
+=======
+>>>>>>> bc77822 (Entrega TP2)
     std::cout << "\n---- Resultado: " << algorithm_label << " ----\n";
     std::cout << "  asignados          : " << (I.n - sol.num_unassigned) << " / " << I.n << "\n";
     std::cout << "  sin asignar        : " << sol.num_unassigned << "\n";
